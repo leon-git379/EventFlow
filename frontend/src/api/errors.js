@@ -24,6 +24,7 @@ export function toApiError(err) {
 
 export const friendly = {
   auth: "Session expired — please log in again.",
+  conflict: "Already handled — the first request won. Refreshing…",
   cors: "Can't reach the API (CORS/network). Check the deployed URL and that deploy.sh ran with CORS enabled.",
   network: "Network error — check your connection.",
   timeout: "The server took too long — try again.",

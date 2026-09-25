@@ -99,6 +99,12 @@ if [ "$SKIP_INFRA" -eq 0 ]; then
     --client-name eventflow-web --explicit-auth-flows ALLOW_USER_SRP_AUTH ALLOW_REFRESH_TOKEN_AUTH ALLOW_USER_PASSWORD_AUTH \
     --prevent-user-existence-errors ENABLED --region "$REGION" $PROF --query UserPoolClient.ClientId --output text)
   echo "  Pool $POOL_ID / Client $CLIENT_ID"
+  step "Cognito groups (RBAC: organizer / sponsor / attendee)"
+  for g in organizer sponsor attendee; do
+    aws cognito-idp create-group --user-pool-id "$POOL_ID" --group-name "$g" \
+      --description "EventFlow $g role" --region "$REGION" $PROF >/dev/null 2>&1 || true
+    echo "  group: $g"
+  done
 else
   step "Cognito: reusing existing pool"
   POOL_ID=$(aws cognito-idp list-user-pools --max-results 10 --query "UserPools[?Name=='$POOL_NAME'].Id | [0]" --output text --region "$REGION" $PROF)
@@ -131,6 +137,22 @@ if aws s3api head-bucket --bucket "$NAME" --region "$REGION" $PROF 2>/dev/null; 
 EOF
   aws s3api put-bucket-policy --bucket "$NAME" --policy "file://$(wpath "$TMP/ef-public.json")" $PROF
 fi
+step "Cognito groups: ensure they exist (re-runs & pre-existing pools)"
+for g in organizer sponsor attendee; do
+  aws cognito-idp create-group --user-pool-id "$POOL_ID" --group-name "$g" \
+    --description "EventFlow $g role" --region "$REGION" $PROF >/dev/null 2>&1 || true
+done
+
+demo_group_add() { # username group — idempotent, non-fatal
+  aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL_ID" \
+    --username "$1" --group-name "$2" --region "$REGION" $PROF >/dev/null 2>&1 || true
+}
+# Demo accounts are confirmed via the summary instructions; group them here on
+# every run so re-deploys heal role assignments automatically.
+demo_group_add demo@eventflow.io organizer
+demo_group_add demo@eventflow.io sponsor
+demo_group_add demo@eventflow.io attendee
+
 step "SSM config parameters"
 for nv in \
   "/eventflow/ddb_users eventflow-users" \
@@ -145,6 +167,20 @@ do
   set -- $nv; n=$1; v=$2
   aws ssm put-parameter --name "$n" --type String --value "$v" --overwrite --region "$REGION" $PROF >/dev/null
 done
+step "SSM QR signing secret (SecureString) + TTL"
+# Create once, never overwrite on re-runs (rotating would invalidate all
+# outstanding passes mid-demo). Set QR_SECRET to force a specific value.
+if ! aws ssm get-parameter --name /eventflow/qr_secret --region "$REGION" $PROF >/dev/null 2>&1; then
+  QR_SECRET_VAL="${QR_SECRET:-$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')}"
+  aws ssm put-parameter --name /eventflow/qr_secret --type SecureString \
+    --value "$QR_SECRET_VAL" --region "$REGION" $PROF >/dev/null
+  echo "  qr_secret created"
+else
+  echo "  qr_secret exists — kept"
+fi
+aws ssm put-parameter --name /eventflow/qr_ttl_hours --type String \
+  --value "${QR_TTL_HOURS:-12}" --overwrite --region "$REGION" $PROF >/dev/null
+echo "  qr_ttl_hours = ${QR_TTL_HOURS:-12}"
 step "Lambda execution role (scoped, no '*')"
 ROLE_NAME=eventflow-lambda-role
 ROLE_ARN=$(aws iam get-role --role-name $ROLE_NAME --query Role.Arn --output text 2>/dev/null || true)
@@ -157,8 +193,11 @@ EOF
   sleep 12
 fi
 # Always (re)apply the inline policy — keeps permissions in sync on re-runs.
+# KEYARN = the aws/ssm managed key, needed for kms:Decrypt when Lambdas read
+# the /eventflow/qr_secret SecureString (GetParameters WithDecryption).
+KMS_KEYARN=$(aws kms describe-key --key-id alias/aws/ssm --region "$REGION" $PROF --query KeyMetadata.Arn --output text)
 aws iam put-role-policy --role-name $ROLE_NAME --policy-name eventflow-minimal \
-  --policy-document "$(sed -e "s/REGION/$REGION/g" -e "s/ACCOUNT/$ACCOUNT/g" "$SCRIPT_DIR/policies/eventflow-lambda-minimal.json")" $PROF
+  --policy-document "$(sed -e "s/REGION/$REGION/g" -e "s/ACCOUNT/$ACCOUNT/g" -e "s|KEYARN|$KMS_KEYARN|g" "$SCRIPT_DIR/policies/eventflow-lambda-minimal.json")" $PROF
 step "Building function packages"
 FUNCS="register checkin queue_join queue_next queue_status booths_list booths_update organizer_summary sponsor_stats swag_redeem volunteers_list qr_pass"
 BUILD="$SCRIPT_DIR/.build"
@@ -211,7 +250,7 @@ step "Default stage (auto-deploy)"
 aws apigatewayv2 create-stage --api-id "$API_ID" --stage-name '$default' --auto-deploy --region "$REGION" $PROF >/dev/null 2>&1 \
   || aws apigatewayv2 update-stage --api-id "$API_ID" --stage-name '$default' --auto-deploy --region "$REGION" $PROF >/dev/null 2>&1 || true
 
-echo "  stage $default on $API_ID"
+echo '  stage $default (auto-deploy) on' "$API_ID"
 
 step "Cognito JWT authorizer"
 AUTH_ID=$(aws apigatewayv2 get-authorizers --api-id "$API_ID" --region "$REGION" $PROF --query "Items[?Name=='eventflow-cognito'].AuthorizerId | [0]" --output text)
@@ -296,9 +335,11 @@ Next steps:
 
 Demo login (one-time):
   aws cognito-idp sign-up --region $REGION --client-id $CLIENT_ID \\
-    --username demo@eventflow.io --password Demo123! --name "Demo User"
+    --username demo@eventflow.io --password Demo123! \\
+    --user-attributes '[{"Name":"email","Value":"demo@eventflow.io"},{"Name":"name","Value":"Demo User"}]'
   aws cognito-idp admin-confirm-sign-up --region $REGION \\
     --user-pool-id $POOL_ID --username demo@eventflow.io
-  # then log in via the frontend login screen with demo@eventflow.io / Demo123!
+  # the deploy script adds this user to organizer/sponsor/attendee groups on
+  # every run — log in via the frontend with demo@eventflow.io / Demo123!
 ============================================================
 SUMMARY

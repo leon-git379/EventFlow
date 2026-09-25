@@ -1,6 +1,7 @@
-// POST /queue/next  (auth — organizer action in the UI)
+// POST /queue/next  (organizer only — JWT group check + SNS notify)
 // body: { queue_id }
 // resp: { called_token, remaining, notified }
+// Authz: caller's id-token must carry the "organizer" Cognito group (403 otherwise).
 // Race-safety: the "serve" flip uses ConditionExpression served = false, so a
 // double-press can never call the same token twice (and can't double-notify).
 import {
@@ -14,6 +15,7 @@ import {
   SNSClient,
   PublishCommand,
   requireAuth,
+  requireGroup,
   fail,
   wrap,
   now,
@@ -22,7 +24,8 @@ import {
 let sns;
 
 export const handler = wrap(async (event) => {
-  await requireAuth(event);
+  const auth = await requireAuth(event);
+  requireGroup(auth, "organizer"); // 403 for non-organizers
   const { queue_id } = parseBody(event);
   if (!queue_id) throw fail(400, "queue_id is required");
 

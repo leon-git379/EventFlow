@@ -1,5 +1,6 @@
-// POST /swag/redeem  (auth)
-// body: { user_id, item_id, booth_id }
+// POST /swag/redeem  (sponsor or organizer — JWT group check)
+// body: { user_id?, item_id, booth_id } — user_id is ignored in live mode:
+//       the redeeming identity comes from the JWT `sub` (whose swag it is).
 // resp: { redeemed, item_id?, remaining?, reason? }
 // Duplicate prevention: per-user redemption row written with attribute_not_exists,
 // stock decrement conditional on quantity > 0. Both atomic — no double swag.
@@ -11,15 +12,19 @@ import {
   PutCommand,
   UpdateCommand,
   requireAuth,
+  requireGroup,
+  subFrom,
   fail,
   wrap,
   now,
 } from "./common.mjs";
 
 export const handler = wrap(async (event) => {
-  await requireAuth(event);
-  const { user_id, item_id, booth_id } = parseBody(event);
-  if (!user_id || !item_id || !booth_id) throw fail(400, "user_id, item_id, booth_id are required");
+  const auth = await requireAuth(event);
+  requireGroup(auth, "sponsor", "organizer", "attendee");
+  const { item_id, booth_id } = parseBody(event);
+  if (!item_id || !booth_id) throw fail(400, "item_id, booth_id are required");
+  const user_id = subFrom(event, auth); // identity from JWT, not the body
 
   const conf = await cfg();
 

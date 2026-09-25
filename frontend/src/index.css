@@ -28,3 +28,18 @@ body {
 .input {
   @apply w-full rounded-xl border border-slate-700 bg-slate-800/60 px-3.5 py-2.5 text-sm text-slate-100 placeholder-slate-500 outline-none transition focus:border-orange-500/60 focus:ring-2 focus:ring-orange-500/20;
 }
+
+/* Skeleton loader — shimmer block shown while a (possibly cold) Lambda wakes */
+.skeleton {
+  @apply relative overflow-hidden rounded-xl bg-slate-800/70;
+}
+.skeleton::after {
+  content: "";
+  @apply absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-slate-700/50 to-transparent;
+  animation: shimmer 1.4s infinite;
+}
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}

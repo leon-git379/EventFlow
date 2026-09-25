@@ -9,7 +9,8 @@
         "dynamodb:PutItem",
         "dynamodb:UpdateItem",
         "dynamodb:Query",
-        "dynamodb:Scan"
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem"
       ],
       "Resource": [
         "arn:aws:dynamodb:REGION:ACCOUNT:table/eventflow-users",
@@ -39,8 +40,14 @@
     {
       "Sid": "SsmReadConfig",
       "Effect": "Allow",
-      "Action": ["ssm:GetParameters"],
+      "Action": ["ssm:GetParameters", "ssm:GetParameter"],
       "Resource": "arn:aws:ssm:REGION:ACCOUNT:parameter/eventflow/*"
+    },
+    {
+      "Sid": "KmsDecryptSsmSecureStringForQrSecret",
+      "Effect": "Allow",
+      "Action": ["kms:Decrypt"],
+      "Resource": "KEYARN"
     },
     {
       "Sid": "CloudWatchLogsWrite",

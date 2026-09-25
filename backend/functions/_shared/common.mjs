@@ -7,11 +7,29 @@ import {
   UpdateCommand,
   QueryCommand,
   ScanCommand,
+  TransactWriteCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { SSMClient, GetParametersCommand } from "@aws-sdk/client-ssm";
-import { createPublicKey, verify as cryptoVerify, randomUUID } from "node:crypto";
+import {
+  createHmac,
+  createPublicKey,
+  timingSafeEqual,
+  verify as cryptoVerify,
+  randomUUID,
+} from "node:crypto";
+import { SNSClient, PublishCommand } from "@aws-sdk/client-sns";
 
-export { GetCommand, PutCommand, UpdateCommand, QueryCommand, ScanCommand, randomUUID };
+export {
+  GetCommand,
+  PutCommand,
+  UpdateCommand,
+  QueryCommand,
+  ScanCommand,
+  TransactWriteCommand,
+  SNSClient,
+  PublishCommand,
+  randomUUID,
+};
 
 const REGION = process.env.AWS_REGION || "ap-south-1";
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }), {
@@ -33,8 +51,11 @@ export async function cfg() {
     "/eventflow/sns_topic",
     "/eventflow/s3_bucket",
     "/eventflow/cognito_pool_id",
+    "/eventflow/qr_secret",
+    "/eventflow/qr_ttl_hours",
   ];
-  const out = await ssm.send(new GetParametersCommand({ Names: names, WithDecryption: false }));
+  // WithDecryption: qr_secret is a SecureString; plain String params unaffected
+  const out = await ssm.send(new GetParametersCommand({ Names: names, WithDecryption: true }));
   const map = {};
   for (const p of out.Parameters || []) map[p.Name] = p.Value;
   CONFIG = {
@@ -46,6 +67,8 @@ export async function cfg() {
     snsTopic: map["/eventflow/sns_topic"],
     s3Bucket: map["/eventflow/s3_bucket"],
     poolId: map["/eventflow/cognito_pool_id"],
+    qrSecret: map["/eventflow/qr_secret"],
+    qrTtlHours: Number(map["/eventflow/qr_ttl_hours"] || 12),
   };
   return CONFIG;
 }
@@ -74,12 +97,18 @@ export function parseBody(event) {
   }
 }
 
-// wrap(handler): uniform error mapping for every route
+// wrap(handler): uniform error mapping for every route.
+// TransactionCancellationException is TransactWriteItems' aggregate failure
+// shape — a condition inside the transaction failed (e.g. user was already
+// in the queue), so it surfaces to the client as a conflict.
 export const wrap = (fn) => async (event) => {
   try {
     return await fn(event);
   } catch (err) {
-    if (err?.name === "ConditionalCheckFailedException") {
+    if (
+      err?.name === "ConditionalCheckFailedException" ||
+      err?.name === "TransactionCanceledException"
+    ) {
       return json(409, { error: "Conflict — state changed, retry" });
     }
     if (err?.status) return json(err.status, { error: err.message });
@@ -87,6 +116,45 @@ export const wrap = (fn) => async (event) => {
     return json(500, { error: "Internal error" });
   }
 };
+
+// ---- RBAC: route-level role checks from the validated JWT ------------------
+// Cognito groups arrive on the id token as "cognito:groups" (array of group
+// names). Organizer-only and sponsor-only routes call requireGroup(event, ...).
+// NOTE: the API Gateway JWT authorizer passes ALLOWED claims through, so the
+// handler checks here rather than trusting route config alone.
+export function requireGroup(source, ...allowed) {
+  // Accepts EITHER the raw event (authorizer claims — but note: HTTP API JWT
+  // authorizers can omit array claims like cognito:groups) OR the decoded
+  // token payload returned by requireAuth — the reliable, signature-verified
+  // source. Handlers should prefer:  requireGroup(await requireAuth(event), role)
+  const claims =
+    source?.requestContext?.authorizer?.jwt?.claims ||
+    source?.requestContext?.authorizer?.claims ||
+    (source && typeof source === "object" ? source : {});
+  // HTTP API JWT authorizers may flatten dotted claim keys — accept both
+  // "cognito:groups" and "groups".
+  const raw = claims["cognito:groups"] ?? claims.groups;
+  const groups = Array.isArray(raw)
+    ? raw
+    : typeof raw === "string"
+      ? raw.split(",").map((g) => g.trim()).filter(Boolean)
+      : [];
+  if (!allowed.some((g) => groups.includes(g))) {
+    if (!raw) {
+      // one-line breadcrumb when a token carries no recognizable group claim
+      console.log("RBAC: no group claim on token. keys=%j", Object.keys(claims));
+    }
+    throw fail(403, `Forbidden — requires one of: ${allowed.join(", ")}`);
+  }
+  return claims;
+}
+
+// identity straight from the ALREADY-VALIDATED token — never from query/body
+export function subFrom(event, claims) {
+  const c = claims || event?.requestContext?.authorizer?.jwt?.claims || {};
+  if (c.sub) return c.sub;
+  throw fail(401, "Unauthorized — token has no subject");
+}
 
 // ---- auth: verify Cognito JWT against the pool's JWKS ----------------------
 let JWKS = null;
@@ -146,6 +214,38 @@ function headerKid(token) {
   } catch {
     return undefined;
   }
+}
+
+// ---- QR pass signing (HMAC-SHA256, secret from SSM) -----------------------
+// Payload format: EF-<user_id>.<issuedAtMs>.<hmac>
+// checkin recomputes the HMAC and rejects tampered or stale (> TTL) passes.
+const b64u = {
+  enc: (buf) => Buffer.from(buf).toString("base64url"),
+};
+
+export function signQrCode(user_id, issuedAtMs, secret) {
+  const payload = `${user_id}:${issuedAtMs}`;
+  const sig = createHmac("sha256", secret).update(payload).digest();
+  return `EF-${user_id}.${issuedAtMs}.${b64u.enc(sig)}`;
+}
+
+export function verifyQrCode(qrCode, secret, ttlHours) {
+  const m = /^EF-(u_[0-9a-f]+)\.(\d+)\.([A-Za-z0-9_-]+)$/.exec(qrCode || "");
+  if (!m) return { ok: false, reason: "malformed_qr" };
+  const [, user_id, issuedAtStr, sigB64] = m;
+  const issuedAt = Number(issuedAtStr);
+  const expected = createHmac("sha256", secret)
+    .update(`${user_id}:${issuedAtStr}`)
+    .digest();
+  const got = Buffer.from(sigB64.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+  if (got.length !== expected.length || !timingSafeEqual(got, expected)) {
+    return { ok: false, reason: "invalid_signature" };
+  }
+  const ageMs = Date.now() - issuedAt;
+  if (ageMs < 0) return { ok: false, reason: "invalid_signature" }; // future timestamp
+  const ttlMs = ttlHours * 3600_000;
+  if (ageMs > ttlMs) return { ok: false, reason: "qr_expired" };
+  return { ok: true, user_id, issuedAt };
 }
 
 // ---- shared domain helpers -------------------------------------------------

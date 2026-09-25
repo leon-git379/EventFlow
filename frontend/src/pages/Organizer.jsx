@@ -1,6 +1,16 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/index.js";
-import { Badge, ErrorBanner, Spinner, SectionTitle, Stat, barTone } from "../components/ui.jsx";
+import { ApiError } from "../api/errors.js";
+import {
+  Badge,
+  ErrorBanner,
+  Notice,
+  Skeleton,
+  SkeletonList,
+  SectionTitle,
+  Stat,
+  barTone,
+} from "../components/ui.jsx";
 
 const QUEUE_NAMES = { food_court: "🍛 Food Court", entry_main: "🚪 Main Entry" };
 
@@ -8,12 +18,14 @@ export default function Organizer() {
   const [summary, setSummary] = useState(null);
   const [volunteers, setVolunteers] = useState([]);
   const [error, setError] = useState(null);
+  const [conflict, setConflict] = useState(null); // 409 → expected state, not a bug
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
 
   // check-in simulator
-  const [qr, setQr] = useState("EF-u_7f3a2c");
+  const [qr, setQr] = useState("");
   const [checkinResult, setCheckinResult] = useState(null);
+  const [checkinBusy, setCheckinBusy] = useState(false);
 
   async function load() {
     try {
@@ -35,6 +47,7 @@ export default function Organizer() {
   }, []);
 
   async function callNext(queue_id) {
+    setConflict(null);
     try {
       const r = await api.callNext({ queue_id });
       setToast(
@@ -45,22 +58,51 @@ export default function Organizer() {
       load();
     } catch (e) {
       setToast(null);
-      setError(e);
+      if (e instanceof ApiError && e.status === 409) {
+        setConflict("Token already served — press again for the next one.");
+        load();
+      } else {
+        setError(e);
+      }
     }
   }
 
   async function simulateCheckin() {
+    setCheckinBusy(true);
+    setConflict(null);
     try {
-      const r = await api.checkin({ qr_code: qr });
+      const r = await api.checkin({ qr_code: qr.trim() });
       setCheckinResult(r);
       load();
     } catch (e) {
       setCheckinResult(null);
-      setError(e);
+      if (e instanceof ApiError && e.status === 409) {
+        setConflict("Already checked in — the first scan won.");
+        load();
+      } else {
+        setError(e);
+      }
     }
+    setCheckinBusy(false);
   }
 
-  if (loading) return <Spinner label="Loading dashboard…" />;
+  if (loading) {
+    // skeleton: mirrors the real dashboard layout (big number, two columns)
+    return (
+      <div className="mx-auto max-w-5xl p-4 pb-16">
+        <Skeleton className="mb-4 h-10 w-72" />
+        <div className="mb-6 card border-rose-500/30 text-center">
+          <Skeleton className="mx-auto h-3 w-56" />
+          <Skeleton className="mx-auto mt-3 h-16 w-40 rounded-2xl" />
+          <Skeleton className="mx-auto mt-3 h-3 w-48" />
+        </div>
+        <div className="grid gap-6 md:grid-cols-2">
+          <SkeletonList count={2} />
+          <SkeletonList count={2} />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-5xl p-4 pb-16">
@@ -77,6 +119,7 @@ export default function Organizer() {
           {toast}
         </div>
       )}
+      {conflict && <Notice onDismiss={() => setConflict(null)}>{conflict}</Notice>}
       <ErrorBanner error={error} onRetry={load} />
 
       {/* Emergency headcount — the big number */}
@@ -138,15 +181,25 @@ export default function Organizer() {
         <section>
           <SectionTitle>Check-in scanner (demo)</SectionTitle>
           <div className="card flex flex-col gap-3">
-            <input className="input" value={qr} onChange={(e) => setQr(e.target.value)} placeholder="Scan or type QR code" />
-            <button className="btn-primary" onClick={simulateCheckin}>
-              Validate & check in
+            {checkinBusy ? (
+              <Skeleton className="h-11 w-full" />
+            ) : (
+              <input className="input" value={qr} onChange={(e) => setQr(e.target.value)} placeholder="Scan or paste signed QR code (EF-u_xxx.ts.sig)" />
+            )}
+            <button className="btn-primary" disabled={checkinBusy || !qr.trim()} onClick={simulateCheckin}>
+              {checkinBusy ? "Validating…" : "Validate & check in"}
             </button>
             {checkinResult && (
-              <p className={`text-sm ${checkinResult.valid ? "text-emerald-400" : "text-rose-400"}`}>
+              <p className={`text-sm ${checkinResult.valid ? "text-emerald-400" : "text-amber-300"}`}>
                 {checkinResult.valid
                   ? `✅ ${checkinResult.name} checked in at ${new Date(checkinResult.time).toLocaleTimeString()}`
-                  : `❌ ${checkinResult.reason || "Invalid QR"}`}
+                  : `ℹ️ ${checkinResult.reason === "qr_expired"
+                      ? "Pass expired (TTL) — attendee must re-register"
+                      : checkinResult.reason === "invalid_signature"
+                        ? "Signature invalid — not a genuine EventFlow pass"
+                        : checkinResult.reason === "already_checked_in"
+                          ? "Already checked in earlier"
+                          : `Not admitted: ${checkinResult.reason}`}`}
               </p>
             )}
           </div>

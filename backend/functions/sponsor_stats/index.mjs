@@ -1,4 +1,4 @@
-// GET /sponsor/stats?sponsor_id=aws
+// GET /sponsor/stats?sponsor_id=aws  (sponsor or organizer — JWT group check)
 // resp: { sponsor_id, visitors_today, avg_wait, swag_distributed, swag_remaining, swag_stock }
 import {
   cfg,
@@ -7,13 +7,15 @@ import {
   GetCommand,
   QueryCommand,
   requireAuth,
+  requireGroup,
   fail,
   wrap,
   boothWait,
 } from "./common.mjs";
 
 export const handler = wrap(async (event) => {
-  await requireAuth(event);
+  const auth = await requireAuth(event);
+  requireGroup(auth, "sponsor", "organizer"); // demo flexibility: organizers may view
   const sponsor_id = (event.queryStringParameters || {}).sponsor_id;
   if (!sponsor_id) throw fail(400, "sponsor_id query param is required");
 

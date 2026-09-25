@@ -1,5 +1,7 @@
-// GET /queue/status?queue_id=food_court[&user_id=u_7f3a2c]
+// GET /queue/status?queue_id=food_court
 // resp: { queue_id, now_serving, waiting, avg_wait, me?: { token, position, wait_time } }
+// Identity: `me` is derived from the JWT `sub` — any user_id in the query
+// string is ignored, so one attendee can never read another's token position.
 import {
   cfg,
   ddb,
@@ -7,12 +9,14 @@ import {
   GetCommand,
   QueryCommand,
   requireAuth,
+  subFrom,
   fail,
   wrap,
 } from "./common.mjs";
 
 export const handler = wrap(async (event) => {
-  await requireAuth(event);
+  const auth = await requireAuth(event);
+  const sub = subFrom(event, auth); // identity from the validated token
   const q = event.queryStringParameters || {};
   const queue_id = q.queue_id;
   if (!queue_id) throw fail(400, "queue_id query param is required");
@@ -38,7 +42,7 @@ export const handler = wrap(async (event) => {
     avg_wait: waiting * minsPer,
   };
 
-  if (q.user_id) {
+  {
     const mine = await ddb.send(
       new QueryCommand({
         TableName: conf.queues,
@@ -46,7 +50,7 @@ export const handler = wrap(async (event) => {
         KeyConditionExpression: "gs1pk = :u AND begins_with(gs1sk, :q)",
         FilterExpression: "served = :f",
         ExpressionAttributeValues: {
-          ":u": `USER#${q.user_id}`,
+          ":u": `USER#${sub}`,
           ":q": `QUEUE#${queue_id}`,
           ":f": false,
         },

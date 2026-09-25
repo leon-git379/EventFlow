@@ -2,7 +2,16 @@ import { useState } from "react";
 import { api } from "../api/index.js";
 import { getSession } from "../api/cognito.js";
 import { STORAGE_KEYS } from "../api/config.js";
-import { Badge, ErrorBanner, Spinner, SectionTitle, barTone } from "../components/ui.jsx";
+import { ApiError } from "../api/errors.js";
+import {
+  Badge,
+  ErrorBanner,
+  Notice,
+  Skeleton,
+  SkeletonList,
+  SectionTitle,
+  barTone,
+} from "../components/ui.jsx";
 
 const QUEUES = [
   { queue_id: "food_court", name: "Food Court", emoji: "🍛" },
@@ -15,6 +24,7 @@ export default function Attendee() {
 
   const [tab, setTab] = useState("pass");
   const [error, setError] = useState(null);
+  const [conflict, setConflict] = useState(null); // 409 → expected, not a bug
   const [busy, setBusy] = useState(false);
 
   // pass
@@ -67,11 +77,17 @@ export default function Attendee() {
   async function join() {
     setBusy(true);
     setError(null);
+    setConflict(null);
     try {
       const r = idempotentJoin();
       setTicket(await r);
     } catch (e) {
-      setError(e);
+      if (e instanceof ApiError && e.status === 409) {
+        // queue busy under heavy concurrent joins — calm notice, retry makes sense
+        setConflict("Queue is busy right now — tap Join again to grab your token.");
+      } else {
+        setError(e);
+      }
     }
     setBusy(false);
   }
@@ -100,6 +116,7 @@ export default function Attendee() {
         <Badge tone="info">📶 live</Badge>
       </header>
 
+      <Notice onDismiss={() => setConflict(null)}>{conflict}</Notice>
       <ErrorBanner error={error} onRetry={() => setError(null)} />
 
       <nav className="mb-4 grid grid-cols-3 gap-2">
@@ -124,7 +141,10 @@ export default function Attendee() {
                 <Badge tone="ok">✅ Valid pass — scan at entry</Badge>
               </>
             ) : (
-              <Spinner label="Generating your pass…" />
+              <div className="flex flex-col items-center gap-3">
+                <Skeleton className="h-56 w-56" />
+                <Skeleton className="h-4 w-40" />
+              </div>
             )}
           </div>
           <div className="card">
@@ -203,7 +223,9 @@ export default function Attendee() {
 
       {tab === "booths" && (
         <section className="flex flex-col gap-3">
-          {booths.length === 0 && <Spinner label="Loading booths…" />}
+          {booths.length === 0 && (
+            <SkeletonList count={4} />
+          )}
           {booths.map((b) => (
             <div key={b.booth_id} className="card flex flex-col gap-2">
               <div className="flex items-center justify-between">

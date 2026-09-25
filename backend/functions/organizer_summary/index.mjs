@@ -1,4 +1,4 @@
-// GET /organizer/summary
+// GET /organizer/summary  (organizer only — JWT group check)
 // resp: { total_inside, checked_in, halls: [...], queues: [...], booths: {...} }
 // Powers the emergency headcount number on the organizer dashboard.
 import {
@@ -8,12 +8,14 @@ import {
   GetCommand,
   ScanCommand,
   requireAuth,
+  requireGroup,
   wrap,
   boothStatus,
 } from "./common.mjs";
 
 export const handler = wrap(async (event) => {
-  await requireAuth(event);
+  const auth = await requireAuth(event);
+  requireGroup(auth, "organizer"); // 403 for non-organizers
   const conf = await cfg();
 
   // global headcount counter (written by /checkin)

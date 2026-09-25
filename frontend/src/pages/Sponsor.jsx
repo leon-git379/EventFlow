@@ -1,7 +1,16 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/index.js";
 import { STORAGE_KEYS } from "../api/config.js";
-import { Badge, ErrorBanner, Spinner, SectionTitle, Stat } from "../components/ui.jsx";
+import { ApiError } from "../api/errors.js";
+import {
+  Badge,
+  ErrorBanner,
+  Notice,
+  SkeletonStatGrid,
+  SkeletonList,
+  SectionTitle,
+  Stat,
+} from "../components/ui.jsx";
 
 const SPONSORS = [
   { id: "aws", name: "AWS", emoji: "☁️" },
@@ -15,6 +24,7 @@ export default function Sponsor() {
   const [stats, setStats] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [conflict, setConflict] = useState(null); // 409 → expected, not a bug
   const [redeemMsg, setRedeemMsg] = useState(null);
 
   const user_id = localStorage.getItem(STORAGE_KEYS.USER_ID) || "u_spdemo";
@@ -39,6 +49,7 @@ export default function Sponsor() {
 
   async function redeem(item_id) {
     setRedeemMsg(null);
+    setConflict(null);
     try {
       const r = await api.redeemSwag({ user_id, item_id, booth_id: sponsorId });
       setRedeemMsg(
@@ -50,7 +61,13 @@ export default function Sponsor() {
       );
       load();
     } catch (e) {
-      setError(e);
+      if (e instanceof ApiError && e.status === 409) {
+        // duplicate redemption raced through as a conflict — same meaning
+        setConflict("Already redeemed — the first scan won, no double swag.");
+        load();
+      } else {
+        setError(e);
+      }
     }
   }
 
@@ -64,6 +81,7 @@ export default function Sponsor() {
         <Badge tone="info">🟢 LIVE</Badge>
       </header>
 
+      <Notice onDismiss={() => setConflict(null)}>{conflict}</Notice>
       <ErrorBanner error={error} onRetry={() => load()} />
 
       <nav className="mb-4 flex flex-wrap gap-2">
@@ -75,7 +93,11 @@ export default function Sponsor() {
       </nav>
 
       {loading ? (
-        <Spinner label="Loading stats…" />
+        <>
+          {/* skeleton mirrors the real layout: 4 stat tiles + 2 content cards */}
+          <SkeletonStatGrid count={4} />
+          <SkeletonList count={2} />
+        </>
       ) : (
         stats && (
           <>

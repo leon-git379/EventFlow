@@ -30,7 +30,17 @@ export async function apiFetch(path, { method = "GET", body, auth = true } = {})
       data = { raw: text };
     }
     if (!res.ok) {
-      const kind = res.status === 401 || res.status === 403 ? "auth" : res.status >= 500 ? "server" : "client";
+      // 409 = expected business conflict (already redeemed / already served /
+      // queue busy). It gets its own kind so screens can show it as a calm
+      // notice instead of a scary red error.
+      const kind =
+        res.status === 401 || res.status === 403
+          ? "auth"
+          : res.status === 409
+            ? "conflict"
+            : res.status >= 500
+              ? "server"
+              : "client";
       throw new ApiError(data.error || `HTTP ${res.status}`, kind, res.status);
     }
     return data;
