@@ -12,3 +12,4 @@ backend/functions/*/*.zip
 *.log
 .DS_Store
 .freebuff/
+backend/infra/.build/
