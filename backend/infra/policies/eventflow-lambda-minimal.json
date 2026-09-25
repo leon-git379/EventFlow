@@ -1,0 +1,56 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DynamoTablesExact",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:Query",
+        "dynamodb:Scan"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/eventflow-users",
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/eventflow-users/index/*",
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/eventflow-queues",
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/eventflow-queues/index/*",
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/eventflow-booths",
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/eventflow-booths/index/*",
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/eventflow-inventory",
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/eventflow-inventory/index/*",
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/eventflow-volunteers",
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/eventflow-volunteers/index/*"
+      ]
+    },
+    {
+      "Sid": "SnsPublishExact",
+      "Effect": "Allow",
+      "Action": ["sns:Publish"],
+      "Resource": "arn:aws:sns:REGION:ACCOUNT:eventflow-notifications"
+    },
+    {
+      "Sid": "S3QrPutOnly",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject"],
+      "Resource": "arn:aws:s3:::eventflow-qr-ACCOUNT-REGION/qr/*"
+    },
+    {
+      "Sid": "SsmReadConfig",
+      "Effect": "Allow",
+      "Action": ["ssm:GetParameters"],
+      "Resource": "arn:aws:ssm:REGION:ACCOUNT:parameter/eventflow/*"
+    },
+    {
+      "Sid": "CloudWatchLogsWrite",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:REGION:ACCOUNT:*"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.vite/
+build/
+*.zip
+.env
+.env.*
+!.env.example
+backend/infra/.deploy-state.json
+backend/infra/.tmp/
+backend/functions/*/*.zip
+*.log
+.DS_Store
+.freebuff/
